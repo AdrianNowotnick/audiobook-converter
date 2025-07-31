@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>AudioBook Konvertierung</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #f4f4f6;
+      padding: 2em;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+      font-size: 2em;
+      margin-bottom: 1.5em;
+    }
+    .flex {
+      display: flex;
+      gap: 1em;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 1em;
+    }
+    input[type="text"] {
+      width: 300px;
+      padding: 0.5em;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    #subdir_container {
+      margin: 1em auto;
+      padding: 1em;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      max-height: 12em;
+      overflow-y: auto;
+      width: 80%;
+    }
+    .subdir-checkbox {
+      display: block;
+      margin: 0.4em 0;
+    }
+    .subdir-checkbox input {
+      margin-right: 0.4em;
+    }
+    .task-container {
+      display: flex;
+      justify-content: space-between;
+      max-width: 700px;
+      margin: 1.5em auto;
+      gap: 1em;
+      flex-wrap: wrap;
+    }
+    .task-container label {
+      flex: 1;
+      white-space: nowrap;
+    }
+    .center-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 1em;
+      margin: 1.5em 0;
+    }
+    button {
+      padding: 0.6em 1.2em;
+      font-size: 1em;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    #start-btn {
+      background: #007bff;
+      color: #fff;
+    }
+    #pause-btn {
+      background: #6c757d;
+      color: #fff;
+    }
+    #progressBar, #progressBarTotal {
+      width: 100%;
+      height: 10px;
+      background: #ddd;
+      border-radius: 5px;
+      margin: 1em 0;
+      overflow: hidden;
+    }
+    #progressBarInner {
+      height: 100%;
+      width: 0%;
+      background: #007bff;
+      transition: width 0.3s;
+    }
+    #progressBarTotalInner {
+      height: 100%;
+      width: 0%;
+      background: #28a745;
+      transition: width 0.3s;
+    }
+    #log {
+      white-space: pre-wrap;
+      background: #eee;
+      padding: 1em;
+      border-radius: 10px;
+      height: 200px;
+      overflow-y: auto;
+    }
+    #timer, #timerTotal {
+      text-align: center;
+      font-weight: bold;
+      margin-top: 0.5em;
+    }
+  </style>
+</head>
+<body>
+  <h1>AudioBook Konvertierung</h1>
+
+  <div class="flex">
+    <div>
+      <label for="inputPath">Eingabeordner:</label><br>
+      <input type="text" id="inputPath" value="/volume1/Media Server/Upload/test">
+    </div>
+    <div>
+      <label for="outputPath">Ausgabeordner:</label><br>
+      <input type="text" id="outputPath" value="/volume1/Media Server/Upload/output">
+    </div>
+  </div>
+
+  <div id="subdir_container">
+    <strong>AudioBooks auswählen:</strong>
+    <div id="subdirCheckboxes" style="margin-top: 0.8em;"></div>
+  </div>
+
+  <div class="task-container">
+    <label><input type="checkbox" name="tasks" value="concat" checked> Concatenating</label>
+    <label><input type="checkbox" name="tasks" value="mp3_to_flac" checked> MP3 → FLAC</label>
+    <label><input type="checkbox" name="tasks" value="flac_to_mp3" checked> FLAC → MP3</label>
+    <label><input type="checkbox" name="tasks" value="set_metadata" checked> Set metadata</label>
+  </div>
+
+  <div class="center-buttons">
+    <button id="start-btn">Start</button>
+    <button id="pause-btn">Pause</button>
+  </div>
+
+  <div id="progressBar"><div id="progressBarInner"></div></div>
+  <div id="timer"></div>
+
+  <div id="progressBarTotal"><div id="progressBarTotalInner"></div></div>
+  <div id="timerTotal"></div>
+
+  <div id="log"></div>
+
+  <script>
+    let paused = false;
+    let startTime = null;
+    let logLength = 0;
+    let interval;
+
+    async function fetchSubdirs() {
+      const inputPath = document.getElementById("inputPath").value;
+      const res = await fetch('/subdirs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: inputPath })
+      });
+      const data = await res.json();
+      const container = document.getElementById("subdirCheckboxes");
+      container.innerHTML = '';
+      data.subdirs.forEach(name => {
+        const box = document.createElement('div');
+        box.className = 'subdir-checkbox';
+        box.innerHTML = `<input type="checkbox" name="subdirs" value="${name}" checked> ${name}`;
+        container.appendChild(box);
+      });
+    }
+
+    document.getElementById("inputPath").addEventListener("change", fetchSubdirs);
+    window.onload = fetchSubdirs;
+
+    function formatTime(ms) {
+      const sec = Math.floor(ms / 1000);
+      const min = Math.floor(sec / 60);
+      const rem = sec % 60;
+      return `${min}:${rem.toString().padStart(2, '0')}`;
+    }
+
+    function updateProgress() {
+      fetch('/progress').then(res => res.json()).then(data => {
+        const lines = data.log;
+        document.getElementById("log").textContent = lines.join('\n');
+        if (!paused && startTime) {
+          const elapsed = Date.now() - startTime;
+          document.getElementById("timer").textContent = "Zeit: " + formatTime(elapsed);
+          const percent = Math.min(100, (lines.length - logLength) * 5);
+          document.getElementById("progressBarInner").style.width = percent + '%';
+
+          // Zweiter Balken – Gesamtfortschritt (provisorisch auf Anzahl Log-Zeilen)
+          const totalPercent = Math.min(100, lines.length);
+          document.getElementById("progressBarTotalInner").style.width = totalPercent + '%';
+          document.getElementById("timerTotal").textContent = "Gesamtfortschritt: " + totalPercent + "%";
+        }
+      });
+    }
+
+    document.getElementById("start-btn").onclick = () => {
+      const btn = document.getElementById("start-btn");
+      if (btn.textContent === "Start") {
+        const inputPath = document.getElementById("inputPath").value;
+        const outputPath = document.getElementById("outputPath").value;
+        const tasks = [...document.querySelectorAll('input[name="tasks"]:checked')].map(el => el.value);
+        const subdirs = [...document.querySelectorAll('input[name="subdirs"]:checked')].map(el => el.value);
+        fetch('/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input_path: inputPath, output_path: outputPath, tasks, subdirs })
+        });
+        startTime = Date.now();
+        logLength = 0;
+        paused = false;
+        btn.textContent = "Stop";
+        interval = setInterval(updateProgress, 1000);
+      } else {
+        fetch('/stop', { method: 'POST' });
+        document.getElementById("start-btn").textContent = "Start";
+        clearInterval(interval);
+        startTime = null;
+        document.getElementById("progressBarInner").style.width = '0%';
+        document.getElementById("progressBarTotalInner").style.width = '0%';
+        document.getElementById("timer").textContent = '';
+        document.getElementById("timerTotal").textContent = '';
+      }
+    };
+
+    document.getElementById("pause-btn").onclick = () => {
+      if (!paused) {
+        fetch('/pause', { method: 'POST' });
+        paused = true;
+        startTime = null;
+        document.getElementById("pause-btn").textContent = "Fortsetzen";
+      } else {
+        fetch('/resume', { method: 'POST' });
+        paused = false;
+        startTime = Date.now();
+        document.getElementById("pause-btn").textContent = "Pause";
+      }
+    };
+  </script>
+</body>
+</html>
+
